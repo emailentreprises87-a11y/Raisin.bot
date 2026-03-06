@@ -59,9 +59,9 @@ conn.commit()
 cursor.execute("SELECT COUNT(*) FROM products")
 if cursor.fetchone()[0] == 0:
     produits = [
-        ("ALOE GRAPE🍇🧊", 10, 2),
-        ("Strawberry Watermelon🍓🍉", 10, 3),
-        ("Kiwi passion fruit guava🥝🧊", 10, 1),
+        ("ALOE GRAPE🍇🧊", 10, 3),
+        ("Strawberry Watermelon🍓🍉", 10, 4),
+        ("Kiwi passion fruit guava🥝🧊", 10, 2),
         ("Strawberry Banana🍓🍌", 10, 3)
     ]
     cursor.executemany(
@@ -88,6 +88,17 @@ class AdminReplyState(StatesGroup):
 
 class AnnouncementState(StatesGroup):
     waiting_text = State()
+
+# ================= DEBUG TEMPORAIRE =================
+
+@dp.message_handler(commands=['whoami'], state="*")
+async def whoami(message: types.Message):
+    await message.answer(
+        f"Ton ID : `{message.from_user.id}`\n"
+        f"ADMIN_ID chargé : `{ADMIN_ID}`\n"
+        f"Égaux : `{message.from_user.id == ADMIN_ID}`",
+        parse_mode="Markdown"
+    )
 
 # ================= START =================
 
