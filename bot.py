@@ -43,6 +43,15 @@ CREATE TABLE IF NOT EXISTS cart (
 )
 """)
 
+# Table annonces
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS announcements (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+""")
+
 conn.commit()
 
 # ================= PRODUITS PAR DÉFAUT =================
@@ -50,9 +59,9 @@ conn.commit()
 cursor.execute("SELECT COUNT(*) FROM products")
 if cursor.fetchone()[0] == 0:
     produits = [
-        ("ALOE GRAPE🍇🧊", 10, 3),
-        ("Strawberry Watermelon🍓🍉", 10, 4),
-        ("Kiwi passion fruit guava🥝🧊", 10, 2),
+        ("ALOE GRAPE🍇🧊", 10, 2),
+        ("Strawberry Watermelon🍓🍉", 10, 3),
+        ("Kiwi passion fruit guava🥝🧊", 10, 1),
         ("Strawberry Banana🍓🍌", 10, 3)
     ]
     cursor.executemany(
@@ -77,20 +86,117 @@ class SupportState(StatesGroup):
 class AdminReplyState(StatesGroup):
     waiting_reply = State()
 
+class AnnouncementState(StatesGroup):
+    waiting_text = State()
+
 # ================= START =================
 
 @dp.message_handler(commands=['start'], state="*")
 async def start(message: types.Message, state: FSMContext):
     await state.finish()
+
     keyboard = InlineKeyboardMarkup()
     keyboard.add(InlineKeyboardButton("🛍 Voir produits", callback_data="catalog"))
     keyboard.add(InlineKeyboardButton("🛒 Voir panier", callback_data="view_cart"))
+    keyboard.add(InlineKeyboardButton("📢 Annonces", callback_data="view_announcements"))
     keyboard.add(InlineKeyboardButton("🎧 Support", callback_data="open_support"))
+
     await message.answer("Bienvenue 👋", reply_markup=keyboard)
+
+# ================= ANNONCES — UTILISATEUR =================
+
+@dp.callback_query_handler(lambda c: c.data == "view_announcements", state="*")
+async def view_announcements(callback: types.CallbackQuery):
+    await callback.answer()
+
+    cursor.execute("SELECT id, message, created_at FROM announcements ORDER BY created_at DESC")
+    annonces = cursor.fetchall()
+
+    if not annonces:
+        await callback.message.answer("📭 Aucune annonce pour le moment.")
+        return
+
+    for ann in annonces:
+        ann_id, texte, date = ann
+
+        # Si admin → bouton supprimer
+        if callback.from_user.id == ADMIN_ID:
+            kb = InlineKeyboardMarkup()
+            kb.add(InlineKeyboardButton("🗑 Supprimer", callback_data=f"del_ann_{ann_id}"))
+            await callback.message.answer(f"📢 {texte}\n\n🕐 {date}", reply_markup=kb)
+        else:
+            await callback.message.answer(f"📢 {texte}\n\n🕐 {date}")
+
+# ================= ANNONCES — ADMIN =================
+
+# /announce — ouvre le menu admin annonces
+@dp.message_handler(commands=['announce'], state="*")
+async def announce_menu(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await state.finish()
+
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("➕ Nouvelle annonce", callback_data="new_announcement"))
+    kb.add(InlineKeyboardButton("📋 Gérer les annonces", callback_data="manage_announcements"))
+
+    await message.answer("📢 Gestion des annonces :", reply_markup=kb)
+
+@dp.callback_query_handler(lambda c: c.data == "new_announcement")
+async def new_announcement(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    await callback.answer()
+    await callback.message.answer("✏️ Écris ton annonce :")
+    await AnnouncementState.waiting_text.set()
+
+@dp.message_handler(state=AnnouncementState.waiting_text)
+async def save_announcement(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    cursor.execute("INSERT INTO announcements (message) VALUES (?)", (message.text,))
+    conn.commit()
+
+    await message.answer("✅ Annonce publiée !")
+    await state.finish()
+
+# Gérer (lister + supprimer) les annonces — admin seulement
+@dp.callback_query_handler(lambda c: c.data == "manage_announcements")
+async def manage_announcements(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    await callback.answer()
+
+    cursor.execute("SELECT id, message, created_at FROM announcements ORDER BY created_at DESC")
+    annonces = cursor.fetchall()
+
+    if not annonces:
+        await callback.message.answer("📭 Aucune annonce.")
+        return
+
+    for ann in annonces:
+        ann_id, texte, date = ann
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("🗑 Supprimer", callback_data=f"del_ann_{ann_id}"))
+        await callback.message.answer(f"📢 {texte}\n\n🕐 {date}", reply_markup=kb)
+
+# Supprimer une annonce — admin seulement
+@dp.callback_query_handler(lambda c: c.data.startswith("del_ann_"))
+async def delete_announcement(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("⛔ Accès refusé.", show_alert=True)
+        return
+
+    await callback.answer()
+    ann_id = int(callback.data.split("_")[2])
+    cursor.execute("DELETE FROM announcements WHERE id=?", (ann_id,))
+    conn.commit()
+
+    await callback.message.edit_text("🗑 Annonce supprimée.")
 
 # ================= SUPPORT =================
 
-# /support = équivalent du bouton Support
 @dp.message_handler(commands=['support'], state="*")
 async def support_command(message: types.Message, state: FSMContext):
     await state.finish()
@@ -246,7 +352,7 @@ async def clear_cart(callback: types.CallbackQuery):
     conn.commit()
     await callback.message.answer("🗑 Panier vidé.")
 
-# ================= CHECKOUT COMPLET =================
+# ================= CHECKOUT =================
 
 @dp.callback_query_handler(lambda c: c.data == "checkout", state="*")
 async def checkout(callback: types.CallbackQuery, state: FSMContext):
