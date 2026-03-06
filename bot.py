@@ -129,10 +129,11 @@ async def view_announcements(callback: types.CallbackQuery):
 
 # ================= ANNONCES — ADMIN =================
 
-# /announce — ouvre le menu admin annonces
-@dp.message_handler(commands=['announce'], state="*")
+# /annonce — ouvre le menu admin annonces
+@dp.message_handler(commands=['annonce'], state="*")
 async def announce_menu(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
+        await message.answer("⛔ Accès refusé.")
         return
     await state.finish()
 
@@ -142,11 +143,13 @@ async def announce_menu(message: types.Message, state: FSMContext):
 
     await message.answer("📢 Gestion des annonces :", reply_markup=kb)
 
-@dp.callback_query_handler(lambda c: c.data == "new_announcement")
+@dp.callback_query_handler(lambda c: c.data == "new_announcement", state="*")
 async def new_announcement(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
+        await callback.answer("⛔ Accès refusé.", show_alert=True)
         return
     await callback.answer()
+    await state.finish()
     await callback.message.answer("✏️ Écris ton annonce :")
     await AnnouncementState.waiting_text.set()
 
@@ -162,7 +165,7 @@ async def save_announcement(message: types.Message, state: FSMContext):
     await state.finish()
 
 # Gérer (lister + supprimer) les annonces — admin seulement
-@dp.callback_query_handler(lambda c: c.data == "manage_announcements")
+@dp.callback_query_handler(lambda c: c.data == "manage_announcements", state="*")
 async def manage_announcements(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         return
