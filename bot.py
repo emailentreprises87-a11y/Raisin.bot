@@ -1,4 +1,4 @@
-      import logging
+import logging
 import sqlite3
 import os
 from dotenv import load_dotenv
@@ -25,6 +25,12 @@ dp = Dispatcher(bot, storage=storage)
 
 conn = sqlite3.connect("shop.db")
 cursor = conn.cursor()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY
+)
+""")
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS products (
@@ -77,20 +83,33 @@ class SupportState(StatesGroup):
 class AdminReplyState(StatesGroup):
     waiting_reply = State()
 
+class AnnouncementState(StatesGroup):
+    waiting_text = State()
+
+class ReplyAnnouncementState(StatesGroup):
+    waiting_reply = State()
+
 # ================= START =================
 
 @dp.message_handler(commands=['start'], state="*")
 async def start(message: types.Message, state: FSMContext):
     await state.finish()
+
+    cursor.execute(
+        "INSERT OR IGNORE INTO users (user_id) VALUES (?)",
+        (message.from_user.id,)
+    )
+    conn.commit()
+
     keyboard = InlineKeyboardMarkup()
     keyboard.add(InlineKeyboardButton("🛍 Voir produits", callback_data="catalog"))
     keyboard.add(InlineKeyboardButton("🛒 Voir panier", callback_data="view_cart"))
     keyboard.add(InlineKeyboardButton("🎧 Support", callback_data="open_support"))
+
     await message.answer("Bienvenue 👋", reply_markup=keyboard)
 
 # ================= SUPPORT =================
 
-# /support = équivalent du bouton Support
 @dp.message_handler(commands=['support'], state="*")
 async def support_command(message: types.Message, state: FSMContext):
     await state.finish()
@@ -156,6 +175,78 @@ async def admin_send_reply(message: types.Message, state: FSMContext):
     await message.answer("✅ Envoyé.")
     await state.finish()
 
+# ================= ANNONCES =================
+
+@dp.message_handler(commands=['annonce'])
+async def annonce_start(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await message.answer("✏️ Écris ton annonce :")
+    await AnnouncementState.waiting_text.set()
+
+@dp.message_handler(state=AnnouncementState.waiting_text)
+async def send_announcement(message: types.Message, state: FSMContext):
+
+    cursor.execute("SELECT user_id FROM users")
+    users = cursor.fetchall()
+
+    for user in users:
+        keyboard = InlineKeyboardMarkup()
+        keyboard.add(InlineKeyboardButton("💬 Répondre", callback_data="reply_annonce"))
+
+        try:
+            await bot.send_message(
+                user[0],
+                f"📢 ANNONCE ADMIN\n\n{message.text}",
+                reply_markup=keyboard
+            )
+        except:
+            pass
+
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("🗑 Supprimer annonce", callback_data="delete_annonce"))
+
+    await message.answer("✅ Annonce envoyée.", reply_markup=kb)
+
+    await state.finish()
+
+@dp.callback_query_handler(lambda c: c.data == "reply_annonce")
+async def reply_annonce(callback: types.CallbackQuery, state: FSMContext):
+
+    await callback.answer()
+    await callback.message.answer("✏️ Écris ta réponse à l'annonce :")
+    await ReplyAnnouncementState.waiting_reply.set()
+
+@dp.message_handler(state=ReplyAnnouncementState.waiting_reply)
+async def send_reply_to_admin(message: types.Message, state: FSMContext):
+
+    user_id = message.from_user.id
+
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("✉️ Répondre", callback_data=f"reply_{user_id}"))
+
+    await bot.send_message(
+        ADMIN_ID,
+        f"💬 Réponse à ton annonce\n\n"
+        f"Utilisateur : {message.from_user.full_name}\n"
+        f"ID : {user_id}\n\n"
+        f"{message.text}",
+        reply_markup=kb
+    )
+
+    await message.answer("✅ Réponse envoyée à l'admin.")
+
+    await state.finish()
+
+@dp.callback_query_handler(lambda c: c.data == "delete_annonce")
+async def delete_annonce(callback: types.CallbackQuery):
+
+    if callback.from_user.id != ADMIN_ID:
+        return
+
+    await callback.message.delete()
+
+# ================= RUN =================
 # ================= CATALOG =================
 
 @dp.callback_query_handler(lambda c: c.data == "catalog")
@@ -168,11 +259,14 @@ async def show_catalog(callback: types.CallbackQuery):
         if product[3] > 0:
             keyboard = InlineKeyboardMarkup(row_width=5)
             max_qty = min(product[3], 5)
+
             buttons = [
                 InlineKeyboardButton(str(i), callback_data=f"buy_{product[0]}_{i}")
                 for i in range(1, max_qty + 1)
             ]
+
             keyboard.add(*buttons)
+
             await callback.message.answer(
                 f"{product[1]} - {product[2]}€ (Stock {product[3]})",
                 reply_markup=keyboard
@@ -183,13 +277,17 @@ async def show_catalog(callback: types.CallbackQuery):
 @dp.callback_query_handler(lambda c: c.data.startswith("buy_"))
 async def add_to_cart(callback: types.CallbackQuery):
     await callback.answer()
+
     _, product_id, quantity = callback.data.split("_")
     product_id = int(product_id)
     quantity = int(quantity)
     user_id = callback.from_user.id
 
-    cursor.execute("SELECT quantity FROM cart WHERE user_id=? AND product_id=?",
-                   (user_id, product_id))
+    cursor.execute(
+        "SELECT quantity FROM cart WHERE user_id=? AND product_id=?",
+        (user_id, product_id)
+    )
+
     existing = cursor.fetchone()
 
     if existing:
@@ -204,11 +302,15 @@ async def add_to_cart(callback: types.CallbackQuery):
         )
 
     conn.commit()
+
     await callback.message.answer("✅ Ajouté au panier !")
+
 
 @dp.callback_query_handler(lambda c: c.data == "view_cart")
 async def view_cart(callback: types.CallbackQuery):
+
     await callback.answer()
+
     user_id = callback.from_user.id
 
     cursor.execute("""
@@ -217,6 +319,7 @@ async def view_cart(callback: types.CallbackQuery):
     JOIN products ON cart.product_id = products.id
     WHERE cart.user_id=?
     """, (user_id,))
+
     items = cursor.fetchall()
 
     if not items:
@@ -224,6 +327,7 @@ async def view_cart(callback: types.CallbackQuery):
         return
 
     text = "🛒 Votre panier :\n\n"
+
     total = 0
 
     for name, price, quantity in items:
@@ -239,37 +343,61 @@ async def view_cart(callback: types.CallbackQuery):
 
     await callback.message.answer(text, reply_markup=keyboard)
 
+
 @dp.callback_query_handler(lambda c: c.data == "clear_cart")
 async def clear_cart(callback: types.CallbackQuery):
+
     await callback.answer()
-    cursor.execute("DELETE FROM cart WHERE user_id=?", (callback.from_user.id,))
+
+    cursor.execute(
+        "DELETE FROM cart WHERE user_id=?",
+        (callback.from_user.id,)
+    )
+
     conn.commit()
+
     await callback.message.answer("🗑 Panier vidé.")
 
-# ================= CHECKOUT COMPLET =================
+
+# ================= CHECKOUT =================
 
 @dp.callback_query_handler(lambda c: c.data == "checkout", state="*")
 async def checkout(callback: types.CallbackQuery, state: FSMContext):
+
     await state.finish()
+
     await callback.answer()
+
     await callback.message.answer("Indique ton Snapchat :")
+
     await OrderState.waiting_snapchat.set()
+
 
 @dp.message_handler(state=OrderState.waiting_snapchat)
 async def get_snap(message: types.Message, state: FSMContext):
+
     await state.update_data(snap=message.text)
+
     await message.answer("Indique ta ville :")
+
     await OrderState.waiting_city.set()
+
 
 @dp.message_handler(state=OrderState.waiting_city)
 async def get_city(message: types.Message, state: FSMContext):
+
     await state.update_data(city=message.text)
+
     await message.answer("Indique le lieu exact :")
+
     await OrderState.waiting_place.set()
+
 
 @dp.message_handler(state=OrderState.waiting_place)
 async def final_order(message: types.Message, state: FSMContext):
+
     data = await state.get_data()
+
     user_id = message.from_user.id
 
     cursor.execute("""
@@ -278,6 +406,7 @@ async def final_order(message: types.Message, state: FSMContext):
     JOIN products ON cart.product_id = products.id
     WHERE cart.user_id=?
     """, (user_id,))
+
     items = cursor.fetchall()
 
     if not items:
@@ -294,10 +423,12 @@ async def final_order(message: types.Message, state: FSMContext):
         recap += f"{name} x{qty} = {subtotal}€\n"
 
     keyboard = InlineKeyboardMarkup()
+
     keyboard.add(
         InlineKeyboardButton("✅ Accepter", callback_data=f"accept_{user_id}"),
         InlineKeyboardButton("❌ Refuser", callback_data=f"refuse_{user_id}")
     )
+
     keyboard.add(
         InlineKeyboardButton("📦 Livré", callback_data=f"delivered_{user_id}")
     )
@@ -310,63 +441,97 @@ async def final_order(message: types.Message, state: FSMContext):
     )
 
     await message.answer("✅ Votre commande a été envoyée à l'admin.")
+
     await state.finish()
+
 
 # ================= ADMIN ACTIONS =================
 
 @dp.callback_query_handler(lambda c: c.data.startswith("accept_"))
 async def accept_order(callback: types.CallbackQuery):
+
     if callback.from_user.id != ADMIN_ID:
         return
+
     await callback.answer("Commande acceptée")
+
     user_id = int(callback.data.split("_")[1])
+
     await bot.send_message(user_id, "✅ Votre commande a été ACCEPTÉE.")
+
 
 @dp.callback_query_handler(lambda c: c.data.startswith("refuse_"))
 async def refuse_start(callback: types.CallbackQuery, state: FSMContext):
+
     if callback.from_user.id != ADMIN_ID:
         return
+
     await callback.answer()
+
     user_id = int(callback.data.split("_")[1])
+
     await state.update_data(refuse_user=user_id)
+
     await callback.message.answer("✏️ Raison du refus :")
+
     await RefuseState.waiting_reason.set()
+
 
 @dp.message_handler(state=RefuseState.waiting_reason)
 async def refuse_reason(message: types.Message, state: FSMContext):
+
     data = await state.get_data()
+
     user_id = data["refuse_user"]
 
     await bot.send_message(
         user_id,
-        f"❌ Votre commande a été refusée.\n\nRaison : {message.text}\n\n"
+        f"❌ Votre commande a été refusée.\n\n"
+        f"Raison : {message.text}\n\n"
         f"Si vous ne comprenez pas utilisez /support"
     )
 
     await message.answer("Refus envoyé ✅")
+
     await state.finish()
+
 
 @dp.callback_query_handler(lambda c: c.data.startswith("delivered_"))
 async def delivered(callback: types.CallbackQuery):
+
     if callback.from_user.id != ADMIN_ID:
         return
 
     await callback.answer("Commande livrée")
+
     user_id = int(callback.data.split("_")[1])
 
-    cursor.execute("SELECT product_id, quantity FROM cart WHERE user_id=?", (user_id,))
+    cursor.execute(
+        "SELECT product_id, quantity FROM cart WHERE user_id=?",
+        (user_id,)
+    )
+
     items = cursor.fetchall()
 
     for pid, qty in items:
-        cursor.execute("UPDATE products SET stock = stock - ? WHERE id=?", (qty, pid))
+        cursor.execute(
+            "UPDATE products SET stock = stock - ? WHERE id=?",
+            (qty, pid)
+        )
 
-    cursor.execute("DELETE FROM cart WHERE user_id=?", (user_id,))
+    cursor.execute(
+        "DELETE FROM cart WHERE user_id=?",
+        (user_id,)
+    )
+
     conn.commit()
 
-    await bot.send_message(user_id, "📦 Merci ! Votre commande a bien été livrée.")
-    await callback.message.delete()
+    await bot.send_message(
+        user_id,
+        "📦 Merci ! Votre commande a bien été livrée."
+    )
 
-# ================= RUN =================
+    await callback.message.delete()
 
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
