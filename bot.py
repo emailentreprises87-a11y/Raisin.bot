@@ -452,6 +452,176 @@ async def delivered(callback: types.CallbackQuery):
     await callback.message.delete()
 
 # ================= RUN =================
+# ================= STATS =================
+
+@dp.message_handler(commands=['stats'])
+async def stats(message: types.Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    cursor.execute("SELECT COUNT(*) FROM users")
+    users = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM products")
+    products = cursor.fetchone()[0]
+
+    await message.answer(
+        f"📊 Statistiques\n\n"
+        f"👤 Utilisateurs : {users}\n"
+        f"🛍 Produits : {products}"
+    )
+
+
+# ================= BROADCAST =================
+
+@dp.message_handler(commands=['broadcast'])
+async def broadcast_start(message: types.Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    await message.answer("✏️ Envoie le message à diffuser :")
+    await BroadcastState.waiting_text.set()
+
+
+@dp.message_handler(state=BroadcastState.waiting_text)
+async def broadcast_send(message: types.Message, state: FSMContext):
+
+    cursor.execute("SELECT user_id FROM users")
+    users = cursor.fetchall()
+
+    count = 0
+
+    for user in users:
+        try:
+            await bot.send_message(user[0], f"📢 MESSAGE ADMIN\n\n{message.text}")
+            count += 1
+        except:
+            pass
+
+    await message.answer(f"✅ Message envoyé à {count} utilisateurs.")
+    await state.finish()
+
+
+# ================= ANNONCE PHOTO =================
+
+@dp.message_handler(commands=['annonce_photo'])
+async def annonce_photo_start(message: types.Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    await message.answer("📷 Envoie la photo de l'annonce :")
+    await PhotoAnnonceState.waiting_photo.set()
+
+
+@dp.message_handler(content_types=['photo'], state=PhotoAnnonceState.waiting_photo)
+async def annonce_photo_receive(message: types.Message, state: FSMContext):
+
+    photo = message.photo[-1].file_id
+    await state.update_data(photo=photo)
+
+    await message.answer("✏️ Écris le texte de l'annonce :")
+    await PhotoAnnonceState.waiting_text.set()
+
+
+@dp.message_handler(state=PhotoAnnonceState.waiting_text)
+async def annonce_photo_send(message: types.Message, state: FSMContext):
+
+    data = await state.get_data()
+    photo = data["photo"]
+
+    cursor.execute("SELECT user_id FROM users")
+    users = cursor.fetchall()
+
+    for user in users:
+        try:
+            await bot.send_photo(
+                user[0],
+                photo,
+                caption=f"📢 ANNONCE\n\n{message.text}"
+            )
+        except:
+            pass
+
+    await message.answer("✅ Annonce photo envoyée.")
+    await state.finish()
+
+
+# ================= ANNONCE LIEN =================
+
+@dp.message_handler(commands=['annonce_lien'])
+async def annonce_lien_start(message: types.Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    await message.answer("✏️ Écris le texte de l'annonce :")
+    await LinkAnnonceState.waiting_text.set()
+
+
+@dp.message_handler(state=LinkAnnonceState.waiting_text)
+async def annonce_lien_text(message: types.Message, state: FSMContext):
+
+    await state.update_data(text=message.text)
+    await message.answer("🔗 Envoie le lien :")
+    await LinkAnnonceState.waiting_url.set()
+
+
+@dp.message_handler(state=LinkAnnonceState.waiting_url)
+async def annonce_lien_send(message: types.Message, state: FSMContext):
+
+    data = await state.get_data()
+
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(InlineKeyboardButton("🔗 Ouvrir", url=message.text))
+
+    cursor.execute("SELECT user_id FROM users")
+    users = cursor.fetchall()
+
+    for user in users:
+        try:
+            await bot.send_message(
+                user[0],
+                f"📢 ANNONCE\n\n{data['text']}",
+                reply_markup=keyboard
+            )
+        except:
+            pass
+
+    await message.answer("✅ Annonce avec lien envoyée.")
+    await state.finish()
+
+
+# ================= ANNONCE BUY =================
+
+@dp.message_handler(commands=['annonce_buy'])
+async def annonce_buy_start(message: types.Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    await message.answer("✏️ Écris ton annonce produit :")
+    await BuyAnnonceState.waiting_text.set()
+
+
+@dp.message_handler(state=BuyAnnonceState.waiting_text)
+async def annonce_buy_send(message: types.Message, state: FSMContext):
+
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(InlineKeyboardButton("🛍 Voir produits", callback_data="catalog"))
+
+    cursor.execute("SELECT user_id FROM users")
+    users = cursor.fetchall()
+
+    for user in users:
+        try:
+            await bot.send_message(
+                user[0],
+                f"🔥 PROMO\n\n{message.text}",
+                reply_markup=keyboard
+            )
+        except:
+            pass
+
+    await message.answer("✅ Annonce produit envoyée.")
+    await state.finish()
 
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
